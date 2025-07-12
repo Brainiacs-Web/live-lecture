@@ -1,6 +1,5 @@
 // server.js
 require('dotenv').config();
-
 const path     = require('path');
 const express  = require('express');
 const http     = require('http');
@@ -10,11 +9,10 @@ const mongoose = require('mongoose');
 const app    = express();
 const server = http.createServer(app);
 const io     = socketIo(server, {
-  cors: { origin: process.env.CORS_ORIGIN || '*' }
+  cors: { origin: '*' }
 });
 
-// ——————————————————————————————————————————
-// 1) MongoDB Atlas Connection
+// 1) MongoDB Atlas
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser:    true,
   useUnifiedTopology: true,
@@ -22,28 +20,24 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log('✅ MongoDB connected'))
 .catch(err => console.error('❌ MongoDB error:', err));
 
-// ——————————————————————————————————————————
-// 2) Static & File Routes
-
-// Serve everything in /public as static
+// 2) Static file serving
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/',      (req, res) => res.redirect('/student.html'));
+app.get('/admin.html',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get('/student.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'student.html')));
 
-// Root redirect to student page
-app.get('/', (req, res) => {
-  res.redirect('/student.html');
-});
+// 3) Build ICE server list with STUN + public TURN
+const iceServers = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  {
+    urls:       'turn:numb.viagenie.ca:3478',
+    username:   'webrtc@live.com',
+    credential: 'muazkh'
+  }
+];
+console.log('🔹 Using ICE servers:', iceServers);
 
-// Explicit routes (optional, but ensures Render can find them)
-app.get('/student.html', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'student.html'));
-});
-app.get('/admin.html', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-});
-
-// ——————————————————————————————————————————
-// 3) WebRTC Signaling & Chat
-// (unchanged from before; adjust as needed)
+// 4) Signaling & chat
 const roomOffers = {};
 
 io.on('connection', socket => {
@@ -51,15 +45,10 @@ io.on('connection', socket => {
 
   socket.on('join', room => {
     socket.join(room);
-    console.log(`${socket.id} joined ${room}`);
-
-    // Send existing offer to late joiners
+    console.log(`${socket.id} → joined ${room}`);
+    // If an offer is already live, send it immediately
     if (roomOffers[room]) {
-      socket.emit('offer', {
-        from:  null,
-        room,
-        offer: roomOffers[room]
-      });
+      socket.emit('offer', { from: null, room, offer: roomOffers[room] });
     }
     socket.to(room).emit('user-joined', socket.id);
   });
@@ -96,9 +85,8 @@ io.on('connection', socket => {
   });
 });
 
-// ——————————————————————————————————————————
-// 4) Start Server
+// 5) Start
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
+  console.log(`🚀 running at http://localhost:${PORT}`);
 });
