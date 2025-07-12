@@ -1,6 +1,7 @@
 // server.js
 require('dotenv').config();
 
+const path     = require('path');
 const express  = require('express');
 const http     = require('http');
 const socketIo = require('socket.io');
@@ -12,7 +13,8 @@ const io     = socketIo(server, {
   cors: { origin: process.env.CORS_ORIGIN || '*' }
 });
 
-// MongoDB Atlas
+// ——————————————————————————————————————————
+// 1) MongoDB Atlas Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser:    true,
   useUnifiedTopology: true,
@@ -20,64 +22,69 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log('✅ MongoDB connected'))
 .catch(err => console.error('❌ MongoDB error:', err));
 
-app.use(express.static('public'));
+// ——————————————————————————————————————————
+// 2) Static & File Routes
 
-// In-memory cache of the last offer per room (optional)
+// Serve everything in /public as static
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Root redirect to student page
+app.get('/', (req, res) => {
+  res.redirect('/student.html');
+});
+
+// Explicit routes (optional, but ensures Render can find them)
+app.get('/student.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'student.html'));
+});
+app.get('/admin.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// ——————————————————————————————————————————
+// 3) WebRTC Signaling & Chat
+// (unchanged from before; adjust as needed)
 const roomOffers = {};
 
-// Signaling & chat
 io.on('connection', socket => {
   console.log('🔌', socket.id, 'connected');
 
   socket.on('join', room => {
     socket.join(room);
     console.log(`${socket.id} joined ${room}`);
-    // Immediately relay existing offer if there is one
+
+    // Send existing offer to late joiners
     if (roomOffers[room]) {
       socket.emit('offer', {
-        from:    null,           // admin socket.id not needed here
+        from:  null,
         room,
-        offer:   roomOffers[room]
+        offer: roomOffers[room]
       });
     }
-    // Tell Admin a new student arrived
     socket.to(room).emit('user-joined', socket.id);
   });
 
   socket.on('offer', data => {
-    // Cache the last offer for new joiners (optional)
     roomOffers[data.room] = data.offer;
-
-    const payload = {
-      from:  socket.id,
-      room:  data.room,
-      offer: data.offer
-    };
-    if (data.to) {
-      socket.to(data.to).emit('offer', payload);
-    } else {
-      socket.to(data.room).emit('offer', payload);
-    }
+    const payload = { from: socket.id, room: data.room, offer: data.offer };
+    if (data.to) socket.to(data.to).emit('offer', payload);
+    else         socket.to(data.room).emit('offer', payload);
   });
 
   socket.on('answer', data => {
-    const payload = {
-      from:     socket.id,
-      room:     data.room,
-      answer:   data.answer
-    };
-    // route back to Admin
-    socket.to(data.to).emit('answer', payload);
+    socket.to(data.to).emit('answer', {
+      from:   socket.id,
+      room:   data.room,
+      answer: data.answer
+    });
   });
 
   socket.on('ice-candidate', data => {
-    const payload = {
+    socket.to(data.to).emit('ice-candidate', {
       from:      socket.id,
       room:      data.room,
       candidate: data.candidate
-    };
-    // route to intended peer
-    socket.to(data.to).emit('ice-candidate', payload);
+    });
   });
 
   socket.on('chat-message', data => {
@@ -89,6 +96,8 @@ io.on('connection', socket => {
   });
 });
 
+// ——————————————————————————————————————————
+// 4) Start Server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
