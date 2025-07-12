@@ -45,7 +45,11 @@
       padding: 0.3rem 0.6rem;
       cursor: pointer; font-size: 0.9rem;
     }
-    button:hover, select:hover, input[type=range]:hover {
+    button:disabled {
+      background: #222;
+      cursor: not-allowed;
+    }
+    button:hover:not(:disabled), select:hover, input[type=range]:hover {
       background: #5c6bc0;
     }
 
@@ -126,7 +130,6 @@
     const ROOM = 'main-room';
     let pc;
 
-    // STUN only (TURN from server if configured)
     const iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
     socket.emit('join', ROOM);
@@ -159,15 +162,24 @@
     });
 
     // —————————————— Video UI Logic ——————————————
-    const video      = document.getElementById('video');
-    const playPause  = document.getElementById('playPause');
-    const skipBack   = document.getElementById('skipBack');
-    const skipFwd    = document.getElementById('skipFwd');
-    const seekBar    = document.getElementById('seekBar');
-    const timeDisplay= document.getElementById('timeDisplay');
-    const rateSelect = document.getElementById('playbackRate');
-    const fullscreen = document.getElementById('fullscreen');
-    const fpsBadge   = document.getElementById('fpsBadge');
+    const video       = document.getElementById('video');
+    const playPause   = document.getElementById('playPause');
+    const skipBack    = document.getElementById('skipBack');
+    const skipFwd     = document.getElementById('skipFwd');
+    const seekBar     = document.getElementById('seekBar');
+    const timeDisplay = document.getElementById('timeDisplay');
+    const rateSelect  = document.getElementById('playbackRate');
+    const fullscreen  = document.getElementById('fullscreen');
+    const fpsBadge    = document.getElementById('fpsBadge');
+
+    // Disable skip until metadata arrives
+    skipBack.disabled = true;
+    skipFwd.disabled  = true;
+
+    video.onloadedmetadata = () => {
+      skipBack.disabled = false;
+      skipFwd.disabled  = false;
+    };
 
     // Play/Pause
     playPause.onclick = () => {
@@ -177,25 +189,34 @@
     video.onplay  = () => playPause.textContent = '⏸️';
     video.onpause = () => playPause.textContent = '▶️';
 
-    // Seek bar
+    // Seek bar & time
     video.ontimeupdate = () => {
-      const val = (video.currentTime / video.duration) * 100;
-      seekBar.value = val || 0;
-      timeDisplay.textContent = formatTime(video.currentTime) +
-                                ' / ' + formatTime(video.duration);
+      if (isFinite(video.duration)) {
+        const val = (video.currentTime / video.duration) * 100;
+        seekBar.value = val;
+        timeDisplay.textContent = formatTime(video.currentTime) +
+                                  ' / ' + formatTime(video.duration);
+      }
     };
     seekBar.oninput = () => {
-      video.currentTime = (seekBar.value / 100) * video.duration;
+      if (isFinite(video.duration)) {
+        video.currentTime = (seekBar.value / 100) * video.duration;
+      }
     };
 
-    // Skip buttons
-    skipBack.onclick = () => video.currentTime = Math.max(0, video.currentTime - 10);
-    skipFwd.onclick  = () => video.currentTime = Math.min(video.duration, video.currentTime + 10);
+    // Skip buttons with guards
+    skipBack.onclick = () => {
+      if (!isFinite(video.currentTime)) return;
+      video.currentTime = Math.max(0, video.currentTime - 10);
+    };
+    skipFwd.onclick = () => {
+      if (!isFinite(video.currentTime) || !isFinite(video.duration)) return;
+      video.currentTime = Math.min(video.duration, video.currentTime + 10);
+    };
 
     // Playback rate
     rateSelect.onchange = () => {
-      const v = parseFloat(rateSelect.value);
-      video.playbackRate = v;
+      video.playbackRate = parseFloat(rateSelect.value);
     };
 
     // Fullscreen
@@ -207,8 +228,8 @@
 
     function formatTime(sec) {
       if (isNaN(sec)) return '00:00';
-      const m = Math.floor(sec/60), s = Math.floor(sec%60);
-      return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+      const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+      return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
     }
 
     // —————————————— Chat ——————————————
@@ -230,13 +251,12 @@
     // —————————————— FPS Monitor ——————————————
     if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
       let lastTime, frames = 0;
-      function measure(now, metadata) {
+      function measure(now) {
         if (lastTime != null) {
           frames++;
           const delta = now - lastTime;
           if (delta >= 1000) {
-            const fps = Math.round((frames * 1000) / delta);
-            fpsBadge.textContent = 'FPS: ' + fps;
+            fpsBadge.textContent = 'FPS: ' + Math.round((frames * 1000) / delta);
             frames = 0;
             lastTime = now;
           }
