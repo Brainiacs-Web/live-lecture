@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live Lecture — Student</title>
+  <style>
+    body {
+      margin: 0; padding: 1rem;
+      background: #1e1e2f; color: #e0e0e0;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex; flex-direction: column;
+      align-items: center;
+    }
+    h1 { margin-bottom: 1rem; }
+
+    #video-container {
+      position: relative;
+      width: 100%; max-width: 900px;
+      background: #000; border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+    }
+    video {
+      width: 100%; height: auto;
+      background: #000;
+    }
+
+    /* Controls row */
+    #controls {
+      display: flex; align-items: center;
+      justify-content: space-between;
+      background: #2a2a3d;
+      padding: 0.5rem;
+      border-radius: 0 0 8px 8px;
+      width: 100%;
+      max-width: 900px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+      margin-bottom: 1rem;
+    }
+    #controls > * { margin: 0 0.5rem; }
+
+    button, select, input[type=range] {
+      background: #444; color: #e0e0e0;
+      border: none; border-radius: 4px;
+      padding: 0.3rem 0.6rem;
+      cursor: pointer; font-size: 0.9rem;
+    }
+    button:hover, select:hover, input[type=range]:hover {
+      background: #5c6bc0;
+    }
+
+    /* Chat styling */
+    #chat {
+      width: 100%; max-width: 900px;
+      display: flex; flex-direction: column;
+      background: #2a2a3d; border-radius:8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+    }
+    #messages {
+      flex:1; padding:1rem; max-height:200px;
+      overflow-y:auto; border-bottom:1px solid #3a3a52;
+    }
+    .msg { margin-bottom: 0.5rem; }
+    .msg.admin   { color: #4fc3f7; }
+    .msg.student { color: #81c784; }
+    #chat-input {
+      display:flex; padding:0.5rem;
+    }
+    #chatIn {
+      flex:1; padding:0.6rem; font-size:1rem;
+      border:none; border-radius:4px 0 0 4px;
+      background:#1e1e2f; color:#e0e0e0;
+    }
+    #sendChat {
+      border-radius:0 4px 4px 0; padding:0 1rem;
+    }
+
+    /* FPS badge */
+    #fpsBadge {
+      position: absolute; top: 8px; right: 8px;
+      background: rgba(0,0,0,0.6); padding: 0.2rem 0.5rem;
+      border-radius: 4px; font-size: 0.8rem;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎓 Live Lecture</h1>
+
+  <div id="video-container">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="fpsBadge">FPS: --</div>
+  </div>
+
+  <!-- Custom controls -->
+  <div id="controls">
+    <button id="playPause">▶️</button>
+    <button id="skipBack">⟵10s</button>
+    <input type="range" id="seekBar" min="0" max="100" value="0">
+    <button id="skipFwd">10s⟶</button>
+    <span id="timeDisplay">00:00 / 00:00</span>
+    <select id="playbackRate">
+      <option>0.5×</option>
+      <option selected>1×</option>
+      <option>1.25×</option>
+      <option>1.5×</option>
+      <option>2×</option>
+    </select>
+    <button id="fullscreen">⛶</button>
+  </div>
+
+  <!-- Chat panel -->
+  <div id="chat">
+    <div id="messages"></div>
+    <div id="chat-input">
+      <input id="chatIn" placeholder="Type your question…" autocomplete="off">
+      <button id="sendChat">Send</button>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // —————————————— WebRTC Setup ——————————————
+    const socket = io();
+    const ROOM = 'main-room';
+    let pc;
+
+    // STUN only (TURN from server if configured)
+    const iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    socket.emit('join', ROOM);
+
+    socket.on('offer', async data => {
+      if (pc) pc.close();
+      pc = new RTCPeerConnection(iceConfig);
+
+      pc.ontrack = e => {
+        video.srcObject = e.streams[0];
+        video.play().catch(()=>{});
+      };
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          socket.emit('ice-candidate', {
+            room: ROOM, to: data.from, candidate: e.candidate
+          });
+        }
+      };
+
+      await pc.setRemoteDescription(data.offer);
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      socket.emit('answer', { room: ROOM, to: data.from, answer: ans });
+    });
+
+    socket.on('ice-candidate', async data => {
+      try { await pc.addIceCandidate(data.candidate); }
+      catch(e){ console.warn('ICE failed', e); }
+    });
+
+    // —————————————— Video UI Logic ——————————————
+    const video      = document.getElementById('video');
+    const playPause  = document.getElementById('playPause');
+    const skipBack   = document.getElementById('skipBack');
+    const skipFwd    = document.getElementById('skipFwd');
+    const seekBar    = document.getElementById('seekBar');
+    const timeDisplay= document.getElementById('timeDisplay');
+    const rateSelect = document.getElementById('playbackRate');
+    const fullscreen = document.getElementById('fullscreen');
+    const fpsBadge   = document.getElementById('fpsBadge');
+
+    // Play/Pause
+    playPause.onclick = () => {
+      if (video.paused) video.play();
+      else              video.pause();
+    };
+    video.onplay  = () => playPause.textContent = '⏸️';
+    video.onpause = () => playPause.textContent = '▶️';
+
+    // Seek bar
+    video.ontimeupdate = () => {
+      const val = (video.currentTime / video.duration) * 100;
+      seekBar.value = val || 0;
+      timeDisplay.textContent = formatTime(video.currentTime) +
+                                ' / ' + formatTime(video.duration);
+    };
+    seekBar.oninput = () => {
+      video.currentTime = (seekBar.value / 100) * video.duration;
+    };
+
+    // Skip buttons
+    skipBack.onclick = () => video.currentTime = Math.max(0, video.currentTime - 10);
+    skipFwd.onclick  = () => video.currentTime = Math.min(video.duration, video.currentTime + 10);
+
+    // Playback rate
+    rateSelect.onchange = () => {
+      const v = parseFloat(rateSelect.value);
+      video.playbackRate = v;
+    };
+
+    // Fullscreen
+    fullscreen.onclick = () => {
+      const c = video.parentElement;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else                            c.requestFullscreen();
+    };
+
+    function formatTime(sec) {
+      if (isNaN(sec)) return '00:00';
+      const m = Math.floor(sec/60), s = Math.floor(sec%60);
+      return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    }
+
+    // —————————————— Chat ——————————————
+    document.getElementById('sendChat').onclick = () => {
+      const txt = document.getElementById('chatIn');
+      const msg = txt.value.trim();
+      if (!msg) return;
+      socket.emit('chat-message', { room: ROOM, message: 'Student: ' + msg });
+      txt.value = '';
+    };
+    socket.on('chat-message', data => {
+      const d = document.createElement('div');
+      d.textContent = data.message;
+      d.className = 'msg ' + (data.message.startsWith('Admin:') ? 'admin' : 'student');
+      document.getElementById('messages').appendChild(d);
+      document.getElementById('messages').scrollTop = 1e9;
+    });
+
+    // —————————————— FPS Monitor ——————————————
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      let lastTime, frames = 0;
+      function measure(now, metadata) {
+        if (lastTime != null) {
+          frames++;
+          const delta = now - lastTime;
+          if (delta >= 1000) {
+            const fps = Math.round((frames * 1000) / delta);
+            fpsBadge.textContent = 'FPS: ' + fps;
+            frames = 0;
+            lastTime = now;
+          }
+        } else lastTime = now;
+        video.requestVideoFrameCallback(measure);
+      }
+      video.requestVideoFrameCallback(measure);
+    } else {
+      fpsBadge.style.display = 'none';
+    }
+  </script>
+</body>
+</html>

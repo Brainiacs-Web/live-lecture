@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin Live Lecture</title>
+  <style>
+    body {
+      margin: 0; padding: 1rem;
+      font-family: 'Segoe UI', sans-serif;
+      background: #121212;
+      color: #EEE;
+      text-align: center;
+    }
+    #localVideo {
+      width: 100%; max-width: 800px;
+      background: #000;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+    }
+    button {
+      margin: 0.5rem;
+      padding: 0.7rem 1.2rem;
+      border: none; border-radius: 4px;
+      background: #29b6f6; color: #fff;
+      cursor: pointer; font-size: 1rem;
+    }
+    button:disabled { background: #555; }
+    #chat {
+      max-width: 800px; margin: 1.5rem auto;
+      text-align: left;
+    }
+    #messages {
+      height: 150px; overflow-y: auto;
+      border: 1px solid #333; padding: 0.5rem;
+      background: #1e1e2f; border-radius: 4px;
+    }
+    #chatIn { width: 70%; padding: 0.5rem; }
+  </style>
+</head>
+<body>
+
+  <h1>📡 Admin Live Stream</h1>
+  <video id="localVideo" autoplay muted playsinline></video><br>
+
+  <button id="startLive">Start Live</button>
+  <button id="startRec" disabled>Start Recording</button>
+  <button id="stopRec" disabled>Stop & Download</button>
+
+  <div id="chat">
+    <input id="chatIn" placeholder="Type message…" />
+    <button id="sendChat">Send</button>
+    <div id="messages"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const ROOM = 'main-room';
+    const iceConfig = { iceServers:[{ urls:'stun:stun.l.google.com:19302' }] };
+    let localStream, recorder, chunks = [];
+    const peers = {};
+
+    document.getElementById('startLive').onclick = async () => {
+      localStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate:{ideal:30,max:30}, width:{max:1280}, height:{max:720} },
+        audio: true
+      });
+      document.getElementById('localVideo').srcObject = localStream;
+      document.getElementById('startRec').disabled = false;
+      document.getElementById('startLive').disabled = true;
+      socket.emit('join', ROOM);
+    };
+
+    socket.on('user-joined', studentId => {
+      const pc = new RTCPeerConnection(iceConfig);
+      peers[studentId] = pc;
+      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+      // cap bitrate
+      pc.getSenders().forEach(s => {
+        if (s.track.kind==='video') {
+          const p = s.getParameters();
+          p.encodings = p.encodings.map(e=>({...e, maxBitrate:800_000}));
+          s.setParameters(p).catch(()=>{});
+        }
+      });
+      pc.onicecandidate = e => {
+        if (e.candidate) socket.emit('ice-candidate',{ room:ROOM, to:studentId, candidate:e.candidate });
+      };
+      pc.createOffer().then(o => pc.setLocalDescription(o).then(()=>{
+        socket.emit('offer',{ room:ROOM, to:studentId, offer:o });
+      }));
+    });
+
+    socket.on('answer', data => {
+      const pc = peers[data.from];
+      if (!pc) return;
+      pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+    });
+
+    socket.on('ice-candidate', data => {
+      const pc = peers[data.from];
+      if (!pc) return;
+      pc.addIceCandidate(data.candidate).catch(()=>{});
+    });
+
+    document.getElementById('startRec').onclick = () => {
+      recorder = new MediaRecorder(localStream);
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, {type:'video/webm'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'lecture.webm';
+        a.click(); chunks=[];
+      };
+      recorder.start();
+      document.getElementById('stopRec').disabled = false;
+      document.getElementById('startRec').disabled = true;
+    };
+    document.getElementById('stopRec').onclick = () => recorder.stop();
+
+    document.getElementById('sendChat').onclick = () => {
+      const m = document.getElementById('chatIn').value.trim();
+      if (!m) return;
+      socket.emit('chat-message',{ room:ROOM, message:'Admin: '+m });
+      document.getElementById('chatIn').value = '';
+    };
+    socket.on('chat-message', data => {
+      const d = document.createElement('div');
+      d.innerText = data.message;
+      document.getElementById('messages').appendChild(d);
+    });
+  </script>
+</body>
+</html>
